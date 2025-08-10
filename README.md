@@ -1,6 +1,6 @@
 ## excaliflow — Local‑first dataflow designer and performance forecaster
 
-excaliflow is a React + TypeScript application for designing microservice dataflows (REST/gRPC/Kafka) and forecasting utilization, capacity and simple latency. It is local‑first: all modeling happens in the browser. The goal is to provide fast iteration on “what‑if” scenarios without requiring a backend.
+excaliflow is a React + TypeScript application for designing microservice dataflows and forecasting utilization, capacity and simple latency. It is local‑first: all modeling happens in the browser. The goal is to provide fast iteration on “what‑if” scenarios without requiring a backend.
 
 ### Quick start
 - npm install
@@ -20,7 +20,7 @@ excaliflow is a React + TypeScript application for designing microservice datafl
 - React Flow for the editor surface (custom node types, minimap, snapping)
 - Zustand + Immer for state and undo/redo
 - Dagre for auto‑layout
-- Recharts for lightweight time‑series in the bottom panel
+- Recharts for lightweight time‑series in the bottom panel (optional)
 - ESLint + TypeScript strict configuration
 
 ### Project structure
@@ -53,30 +53,31 @@ src/
 
 ### Data model essentials
 - Nodes: `ApiEndpoint`, `Service`, `QueueTopic` (Kafka/topic), `Datastore`.
-- Edges: directed; protocol: `REST | gRPC | Kafka`.
-- New: All nodes and edges accept optional `penalties` for advanced modeling: `{ capacityMultiplier, throughputMultiplier, latencyMsAdd, latencyMultiplier, fixedRpsCap }`.
+- Edges: directed; protocol: `Generic | Kafka`.
+- Node‑level multipliers remain under `penalties` for advanced modeling: `{ capacityMultiplier, throughputMultiplier, latencyMsAdd, latencyMultiplier, fixedRpsCap }`.
 - Each node type exposes “dials” (typed fields) edited in the Inspector. Examples:
   - ApiEndpoint: `targetQps`, `burstFactor`, optional `p50Ms`, `p95Ms` (informational)
-  - Service: `concurrency`, `parallelEfficiency`, `serviceTimeMs`, `cacheHitRate`, `cacheHitMs`, `coldStartRate`, `coldStartMs`, optional `maxInFlight`
-  - QueueTopic: `partitions`, `perPartitionThroughput`, optional `consumerGroupConcurrency`
-  - Datastore: `maxQps`, `p95Ms`, optional `connectionPoolSize`, `maxConcurrentRequests`
-  - Edge (REST/gRPC): `payloadBytes`, `clientTimeoutMs`, `retries`, `retryBackoffMs`, `errorRate`
+  - Service: `concurrency`, `parallelEfficiency`, `serviceTimeMs`, `cacheHitRate`, `cacheHitMs`, optional `maxInFlight`, optional `join`, and `fanOut` (`split | duplicate`)
+  - QueueTopic: `partitions`, `perPartitionThroughput`
+  - Datastore: `maxQps`, `p95Ms`, optional `writeAmplification`, `lockContentionFactor`, `poolSize`, `maxConcurrent`
+  - Edge: `opType` (`read | write | bulk | stream`), `weight` (used when `fanOut=split`), and for Kafka edges only: `keySkew`
 
 ### Compute model
 Simple, deterministic approximations designed for interactivity.
-- Service effective service time: `t_eff = (1 − cacheHitRate) × serviceTimeMs + cacheHitRate × cacheHitMs + coldStartRate × coldStartMs`
-- Service capacity: `capacity = concurrency × parallelEfficiency × (1000 / t_eff)`
+- Service effective service time: `t_eff = (1 − cacheHitRate) × serviceTimeMs + cacheHitRate × cacheHitMs`
+- Service workers: if consuming from Kafka, `workers = min(concurrency, sum(upstreamTopic.partitions))`; otherwise `workers = concurrency`
+- Service capacity: `capacity = workers × parallelEfficiency × (1000 / t_eff)`
 - Apply node penalties: `capacity *= penalties.capacityMultiplier`; clamp by `penalties.fixedRpsCap` and `maxInFlight` when set
 - Utilization: `ρ = ingress / max(capacity, ε)`; color bands: <0.7 green, 0.7–0.85 yellow, ≥1.0 red
 - Queueing penalty (service): if `ρ > 0.7`, `queueMs = (ρ^3) × t_eff`
 - Latency (service): `p50 = (t_eff + queueMs) × penalties.latencyMultiplier + penalties.latencyMsAdd`; `p95 = p50 × p95Multiplier`
 - Topic capacity: `capacity = partitions × perPartitionThroughput × penalties.capacityMultiplier`, then clamp by `fixedRpsCap`; egress = `min(ingress, capacity)` × `throughputMultiplier`
-- Datastore capacity: `capacity = min(maxQps, connectionPoolSize × maxConcurrentRequests)` when set; apply `capacityMultiplier` and `fixedRpsCap`; `p50 = (p95Ms/1.5) × latencyMultiplier + latencyMsAdd`, `p95 = p50 × p95Multiplier`
+- Datastore capacity: `capacity = min(maxQps, poolSize × maxConcurrent)` when set; apply `capacityMultiplier` and `fixedRpsCap`; `p50 = (p95Ms/1.5) × latencyMultiplier + latencyMsAdd`, adjusted by write contention `p50 *= (1 + writeShare × lockContentionFactor)`; `p95 = p50 × p95Multiplier`
 - API ingress shaping: `effectiveIngress = targetQps × burstFactor`; penalties apply to throughput and latency similarly
-- REST/gRPC edge latency: `base = networkBaseMs + (payloadBytes / linkMBps) × 1000`; expected retry overhead: `retries × (base + retryBackoffMs) × errorRate`; total latency = `(base + retryOverhead) × latencyMultiplier + latencyMsAdd`, clamped by `clientTimeoutMs` if set
-- Kafka edge producer penalty: key skew penalty ≈ `skew^2`; per-edge producer cap = `partitions × perPartitionThroughput × (1 − skew^2)`; flow is clamped by this before accumulating into topic ingress
+- Kafka edge producer penalty: key skew penalty ≈ `skew^2`; producer cap = `min(effectivePartitions, service.concurrency) × perPartitionThroughput`
 - Throughput penalties: node/edge egress multiply by `throughputMultiplier` and clamp by `fixedRpsCap` when set
-- Flow propagation: topological order, split egress evenly across outgoing edges by default
+- Flow propagation: topological order; `Service.fanOut=split` distributes egress by weights; `duplicate` sends full egress on each outgoing edge.
+ - Backpressure accounting: per node, acceptance ratio = `egress/ingress`. Each incoming edge records delivered vs blocked RPS based on this ratio.
 
 The compute worker contract:
 ```
@@ -101,7 +102,8 @@ The compute worker contract:
 - Edge labels are optional (edited in Inspector on edge selection).
 - Auto‑layout uses Dagre with type‑aware node sizes and generous spacing to avoid overlap. Two orientations are supported from the top bar: Vertical (TB) and Horizontal (LR).
 - Inspector provides dial editing with explanatory tooltips (centralized in `graph/help.ts`).
-- Dashboard cards summarize each node’s Input / Effective cap / Output / Utilization with tooltips.
+- Dashboard cards summarize each node’s Input / Effective cap / Output / Utilization with tooltips. For Service and Datastore cards, p50/p95 latency is displayed; a “?” popover explains the exact computation and inputs.
+- Edge hover popovers on the canvas show modeled latency and delivered/blocked RPS.
 - Compute is triggered from the top bar (Run Calc) and results are displayed via the dashboard cards. A lightweight runner component (`EngineRunner`) ensures worker communication without extra UI.
 
 ### Connection points, handles and edge direction
@@ -113,7 +115,7 @@ The compute worker contract:
 - When a user drags to create an edge, the app uses `onConnectStart` to record the starting node/handle and enforces that node as the edge source. This prevents React Flow from flipping direction in some cross‑side cases.
 - The edge model persists handle ids in `Edge.fromHandle` and `Edge.toHandle`. When rendering, these are passed to React Flow as `sourceHandle` and `targetHandle` so edges attach to the requested sides.
 - Directional markers (closed arrowheads) are rendered on edge ends.
-- Smart defaults: new edges starting from a `QueueTopic` default to protocol `Kafka`; otherwise `REST`.
+- Smart defaults: when creating an edge, if either endpoint is a `QueueTopic`, protocol is `Kafka`; otherwise `Generic`.
 - Layout: both vertical (TB) and horizontal (LR) auto‑layout options are available. Cross‑side connections are respected by layout; spacing can be tuned in `hooks/useAutoLayout.ts` (`nodesep`, `ranksep`).
 
 
@@ -137,7 +139,7 @@ The compute worker contract:
   1) Add to `Protocol` in `types.ts`.
   2) Extend `validators.ts` to constrain allowed endpoints.
   3) Update `compute.ts` to model throughput/latency and any timeout/backpressure.
-- Edge flow weighting: introduce `edge.dials.weight` (0–1) and update compute to distribute egress proportionally.
+- Edge flow weighting: supported via `edge.weight` (used when `fanOut=split`).
 - Cycles: for feedback loops, use iterative relaxation per tick (cap iteration count) and detect convergence.
 
 ### Developer workflow
@@ -171,8 +173,9 @@ The compute worker contract:
 This section documents the exact formulas currently implemented in `engine/compute.ts` and where to adjust them.
 
 #### Service nodes
-- Effective service time: `t_eff = (1 − cacheHitRate) × serviceTimeMs + cacheHitRate × cacheHitMs + coldStartRate × coldStartMs`
-- Capacity (RPS): `capacity = concurrency × parallelEfficiency × (1000 / t_eff)`
+- Effective service time: `t_eff = (1 − cacheHitRate) × serviceTimeMs + cacheHitRate × cacheHitMs`
+- Workers: if consuming from Kafka, `workers = min(concurrency, sum(upstreamTopic.partitions))`; else `workers = concurrency`
+- Capacity (RPS): `capacity = workers × parallelEfficiency × (1000 / t_eff)`
 - Utilization: `ρ = ingress / max(capacity, ε)`
 - Queueing penalty: If `ρ > 0.7`, add `queueMs = (ρ^3) × t_eff`; otherwise `queueMs = 0`
 - Latency: `p50 = (t_eff + queueMs) × latencyMultiplier + latencyMsAdd`; `p95 = p50 × p95Multiplier`
@@ -183,7 +186,7 @@ Tunable: `p95Multiplier` (default 2) in `defaultEngineConfig`.
 
 #### Queue/Topic nodes (Kafka/queues)
 - Topic capacity: `capacity = partitions × perPartitionThroughput × capacityMultiplier`, clamped by `fixedRpsCap` if set
-- Egress (RPS): `min(ingress, capacity) × throughputMultiplier`, clamped by `fixedRpsCap`
+- Egress (RPS): `min(ingress, capacity, consumerCapTotal) × throughputMultiplier`, clamped by `fixedRpsCap`
 - Utilization: `ingress / max(capacity, ε)`
 - Consumer lag estimate: `max(0, ingress − egress)`
 
@@ -193,27 +196,20 @@ Kafka edge producer shaping (applied on edges entering a `QueueTopic`):
 
 #### Datastore nodes
 - Base capacity (QPS): `maxQps`
-- Pool clamp: if set, `poolClamp = connectionPoolSize × maxConcurrentRequests`; `capacity = min(maxQps, poolClamp)`
+- Pool clamp: if set, `poolClamp = poolSize × maxConcurrent`; `capacity = min(maxQps, poolClamp)`
 - Apply `capacityMultiplier` and `fixedRpsCap` as clamps
 - Utilization: `ingress / max(capacity, ε)`
-- Latency: `p50 = (p95Ms/1.5) × latencyMultiplier + latencyMsAdd`, `p95 = p50 × p95Multiplier`
+- Latency: `p50 = (p95Ms/1.5) × latencyMultiplier + latencyMsAdd`, adjusted by write contention: `p50 *= (1 + writeShare × lockContentionFactor)`; `p95 = p50 × p95Multiplier`
 - Egress (RPS): `min(ingress, capacity) × throughputMultiplier`, clamped by `fixedRpsCap`
 
-#### REST/gRPC edges
-- Base latency: `networkBaseMs + (payloadBytes / linkMBps) × 1000`
-- Retry overhead: `retries × (base + retryBackoffMs) × errorRate`
-- Latency with penalties: `(base + retryOverhead) × latencyMultiplier + latencyMsAdd`
-- Timeout clamp: if `clientTimeoutMs` is set and latency ≥ timeout, surface a timeout warning.
-
-Coefficients in `defaultEngineConfig`:
-- `networkBaseMs = 4`
-- `linkMBps = 100`
-- `p95Multiplier = 2`
+#### Edges
+- Generic edges add no latency; Kafka edges carry only `keySkew` shaping (producer side). Tunable: `p95Multiplier` (default 2).
 
 #### Flow propagation
 - Ingress seeding: sum of `ApiEndpoint.targetQps × burstFactor` per API node.
 - Order: compute in a best‑effort topological order (Kahn). If cycles exist, remaining nodes are appended to ensure a pass over all nodes.
-- Egress split: if multiple outgoing edges exist, egress is divided evenly across them (current MVP). Each edge may further clamp its share (e.g., Kafka producer cap), after which the value is accumulated into the target node’s ingress.
+- Egress split: if multiple outgoing edges exist, egress is divided by weights (`fanOut=split`) or duplicated to each edge (`fanOut=duplicate`). Each Kafka edge may clamp flow by producer cap before accumulating into topic ingress.
+- Backpressure: For each node, acceptance ratio `= egress/ingress`; each incoming edge records `deliveredRps` and `blockedRps`.
 
 #### Validation (summarized)
 - Kafka edges allowed only: `Service → QueueTopic` or `QueueTopic → Service`.

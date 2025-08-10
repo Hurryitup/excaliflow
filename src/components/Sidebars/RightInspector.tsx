@@ -1,13 +1,26 @@
+import React from 'react'
 import { useGraphStore } from '../../graph/store'
 import { dialTooltips } from '../../graph/help'
 import type { Edge } from '../../graph/types'
-import { edgeTooltips } from '../../graph/help'
+import { edgeTooltips, genericEdgeHelp } from '../../graph/help'
 
 export default function RightInspector() {
   const graph = useGraphStore((s) => s.graph)
   const selectedId = useGraphStore((s) => s.selectedId)
   const updateNode = useGraphStore((s) => s.updateNode)
   const updateEdge = useGraphStore((s) => s.updateEdge)
+  const [advanced, setAdvanced] = React.useState<boolean>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('inspector:advanced') ?? 'false') as boolean
+    } catch {
+      return false
+    }
+  })
+  const toggle = () => {
+    const next = !advanced
+    setAdvanced(next)
+    localStorage.setItem('inspector:advanced', JSON.stringify(next))
+  }
 
   const node = graph.nodes.find((n) => n.id === selectedId)
   const edge = graph.edges.find((e) => e.id === selectedId)
@@ -16,7 +29,10 @@ export default function RightInspector() {
 
   if (node) return (
     <div style={{ width: 300, padding: 12, borderRadius: 12, background: 'rgba(255,255,255,.92)', border: '1px solid #e5e7eb', boxShadow: '0 4px 14px rgba(0,0,0,.08)' }}>
-      <h3 style={{ marginTop: 0 }}>{node.label}</h3>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h3 style={{ marginTop: 0 }}>{node.label}</h3>
+        <button onClick={toggle} title={advanced ? 'Switch to Simple' : 'Switch to Advanced'} style={{ fontSize: 11 }}>{advanced ? 'Advanced' : 'Simple'}</button>
+      </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div>
           <div style={{ fontSize: 12, color: '#4b5563' }}>Label</div>
@@ -28,34 +44,37 @@ export default function RightInspector() {
         </div>
         {node.type === 'Service' && (
           <>
+            <div>
+              <div style={{ fontSize: 12, color: '#4b5563' }}>Fan-out</div>
+              <select value={node.dials.fanOut ?? 'split'} onChange={(e) => updateNode(node.id, (n) => (n.dials.fanOut = e.target.value as any))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }}>
+                <option value="split">split</option>
+                <option value="duplicate">duplicate</option>
+              </select>
+            </div>
             <div title={dialTooltips.Service.concurrency}>
               <div style={{ fontSize: 12, color: '#4b5563' }}>Concurrency</div>
               <input type="number" value={node.dials.concurrency} min={1} onChange={(e) => updateNode(node.id, (n) => (n.dials.concurrency = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
             </div>
+            {advanced && (
             <div title={dialTooltips.Service.parallelEfficiency}>
               <div style={{ fontSize: 12, color: '#4b5563' }}>Parallel efficiency (0..1)</div>
               <input type="number" value={node.dials.parallelEfficiency ?? 1} min={0} max={1} step={0.01} onChange={(e) => updateNode(node.id, (n) => (n.dials.parallelEfficiency = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
-            </div>
+            </div>)}
             <div title={dialTooltips.Service.serviceTimeMs}>
               <div style={{ fontSize: 12, color: '#4b5563' }}>Service time (ms)</div>
               <input type="number" value={node.dials.serviceTimeMs} min={1} onChange={(e) => updateNode(node.id, (n) => (n.dials.serviceTimeMs = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
             </div>
+            {advanced && (
             <div title={dialTooltips.Service.cacheHitRate}>
               <div style={{ fontSize: 12, color: '#4b5563' }}>Cache hit rate (0..1)</div>
               <input type="number" value={node.dials.cacheHitRate ?? 0} min={0} max={1} step={0.01} onChange={(e) => updateNode(node.id, (n) => (n.dials.cacheHitRate = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
-            </div>
+            </div>)}
+            {advanced && (
             <div title={dialTooltips.Service.cacheHitMs}>
               <div style={{ fontSize: 12, color: '#4b5563' }}>Cache hit ms</div>
               <input type="number" value={node.dials.cacheHitMs ?? 1} min={0} onChange={(e) => updateNode(node.id, (n) => (n.dials.cacheHitMs = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
-            </div>
-            <div title={dialTooltips.Service.coldStartRate}>
-              <div style={{ fontSize: 12, color: '#4b5563' }}>Cold start rate (0..1)</div>
-              <input type="number" value={node.dials.coldStartRate ?? 0} min={0} max={1} step={0.01} onChange={(e) => updateNode(node.id, (n) => (n.dials.coldStartRate = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
-            </div>
-            <div title={dialTooltips.Service.coldStartMs}>
-              <div style={{ fontSize: 12, color: '#4b5563' }}>Cold start ms</div>
-              <input type="number" value={node.dials.coldStartMs ?? 0} min={0} onChange={(e) => updateNode(node.id, (n) => (n.dials.coldStartMs = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
-            </div>
+            </div>)}
+            {/* Kafka parallelism now modeled by concurrency only */}
           </>
         )}
 
@@ -68,10 +87,6 @@ export default function RightInspector() {
             <div title={dialTooltips.QueueTopic.perPartitionThroughput}>
               <div style={{ fontSize: 12, color: '#4b5563' }}>Per-partition throughput (RPS)</div>
               <input type="number" value={node.dials.perPartitionThroughput} min={1} onChange={(e) => updateNode(node.id, (n) => (n.dials.perPartitionThroughput = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
-            </div>
-            <div title={dialTooltips.QueueTopic.consumerGroupConcurrency}>
-              <div style={{ fontSize: 12, color: '#4b5563' }}>Consumer group concurrency</div>
-              <input type="number" value={node.dials.consumerGroupConcurrency ?? 1} min={1} onChange={(e) => updateNode(node.id, (n) => (n.dials.consumerGroupConcurrency = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
             </div>
           </>
         )}
@@ -93,14 +108,22 @@ export default function RightInspector() {
               <div style={{ fontSize: 12, color: '#4b5563' }}>P95 (ms)</div>
               <input type="number" value={node.dials.p95Ms} min={1} onChange={(e) => updateNode(node.id, (n) => (n.dials.p95Ms = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
             </div>
-            <div title={dialTooltips.Datastore.connectionPoolSize}>
-              <div style={{ fontSize: 12, color: '#4b5563' }}>Connection pool size</div>
-              <input type="number" value={node.dials.connectionPoolSize ?? 1000000} min={1} onChange={(e) => updateNode(node.id, (n) => (n.dials.connectionPoolSize = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
-            </div>
-            <div title={dialTooltips.Datastore.maxConcurrentRequests}>
-              <div style={{ fontSize: 12, color: '#4b5563' }}>Max concurrent requests</div>
-              <input type="number" value={node.dials.maxConcurrentRequests ?? 1000000} min={1} onChange={(e) => updateNode(node.id, (n) => (n.dials.maxConcurrentRequests = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
-            </div>
+            {advanced && (<div title={dialTooltips.Datastore.writeAmplification}>
+              <div style={{ fontSize: 12, color: '#4b5563' }}>Write amplification</div>
+              <input type="number" value={node.dials.writeAmplification ?? 4} min={1} onChange={(e) => updateNode(node.id, (n) => (n.dials.writeAmplification = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
+            </div>)}
+            {advanced && (<div title={dialTooltips.Datastore.lockContentionFactor}>
+              <div style={{ fontSize: 12, color: '#4b5563' }}>Lock contention factor</div>
+              <input type="number" value={node.dials.lockContentionFactor ?? 0} min={0} step={0.1} onChange={(e) => updateNode(node.id, (n) => (n.dials.lockContentionFactor = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
+            </div>)}
+            {advanced && (<div title={dialTooltips.Datastore.poolSize}>
+              <div style={{ fontSize: 12, color: '#4b5563' }}>Pool size</div>
+              <input type="number" value={node.dials.poolSize ?? 1000000} min={1} onChange={(e) => updateNode(node.id, (n) => (n.dials.poolSize = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
+            </div>)}
+            {advanced && (<div title={dialTooltips.Datastore.maxConcurrent}>
+              <div style={{ fontSize: 12, color: '#4b5563' }}>Max concurrent</div>
+              <input type="number" value={node.dials.maxConcurrent ?? 1000000} min={1} onChange={(e) => updateNode(node.id, (n) => (n.dials.maxConcurrent = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
+            </div>)}
           </>
         )}
       </div>
@@ -110,7 +133,10 @@ export default function RightInspector() {
   // Edge inspector — styled consistently with node inputs
   return (
     <div style={{ width: 300, padding: 12, borderRadius: 12, background: 'rgba(255,255,255,.92)', border: '1px solid #e5e7eb', boxShadow: '0 4px 14px rgba(0,0,0,.08)' }}>
-      <h3 style={{ marginTop: 0 }}>Edge</h3>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h3 style={{ marginTop: 0 }}>Edge</h3>
+        <button onClick={toggle} title={advanced ? 'Switch to Simple' : 'Switch to Advanced'} style={{ fontSize: 11 }}>{advanced ? 'Advanced' : 'Simple'}</button>
+      </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div>
           <div style={{ fontSize: 12, color: '#4b5563' }}>Label (optional)</div>
@@ -132,36 +158,28 @@ export default function RightInspector() {
             <option value="Kafka">Kafka</option>
           </select>
         </div>
-        {edge?.protocol !== 'Kafka' && (
-          <>
-            <div title={edgeTooltips.REST.payloadBytes}>
-              <div style={{ fontSize: 12, color: '#4b5563' }}>Payload bytes</div>
-              <input type="number" value={edge?.dials.payloadBytes ?? 0} min={0} onChange={(e) => edge && updateEdge(edge.id, (ed) => (ed.dials.payloadBytes = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
-            </div>
-            <div title={edgeTooltips.REST.clientTimeoutMs}>
-              <div style={{ fontSize: 12, color: '#4b5563' }}>Client timeout (ms)</div>
-              <input type="number" value={edge?.dials.clientTimeoutMs ?? 0} min={0} onChange={(e) => edge && updateEdge(edge.id, (ed) => (ed.dials.clientTimeoutMs = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
-            </div>
-            <div title={edgeTooltips.REST.retries}>
-              <div style={{ fontSize: 12, color: '#4b5563' }}>Retries</div>
-              <input type="number" value={edge?.dials.retries ?? 0} min={0} onChange={(e) => edge && updateEdge(edge.id, (ed) => (ed.dials.retries = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
-            </div>
-            <div title={edgeTooltips.REST.retryBackoffMs}>
-              <div style={{ fontSize: 12, color: '#4b5563' }}>Retry backoff (ms)</div>
-              <input type="number" value={edge?.dials.retryBackoffMs ?? 0} min={0} onChange={(e) => edge && updateEdge(edge.id, (ed) => (ed.dials.retryBackoffMs = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
-            </div>
-            <div title={edgeTooltips.REST.errorRate}>
-              <div style={{ fontSize: 12, color: '#4b5563' }}>Error rate (0..1)</div>
-              <input type="number" value={edge?.dials.errorRate ?? 0} min={0} max={1} step={0.01} onChange={(e) => edge && updateEdge(edge.id, (ed) => (ed.dials.errorRate = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
-            </div>
-          </>
-        )}
+        {/* Generic edges have no latency/timeout fields now */}
         {edge?.protocol === 'Kafka' && (
           <div title={edgeTooltips.Kafka.keySkew}>
             <div style={{ fontSize: 12, color: '#4b5563' }}>Key skew (0..1)</div>
-            <input type="number" value={edge?.dials.keySkew ?? 0} min={0} max={1} step={0.01} onChange={(e) => edge && updateEdge(edge.id, (ed) => (ed.dials.keySkew = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
+            <input type="number" value={edge?.keySkew ?? 0} min={0} max={1} step={0.01} onChange={(e) => edge && updateEdge(edge.id, (ed) => (ed.keySkew = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
           </div>
         )}
+        <div title={genericEdgeHelp.opType}>
+          <div style={{ fontSize: 12, color: '#4b5563' }}>Operation type</div>
+          <select value={edge?.opType ?? ''} onChange={(e) => edge && updateEdge(edge.id, (ed) => (ed.opType = (e.target.value || undefined) as any))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }}>
+            <option value="">—</option>
+            <option value="read">read</option>
+            <option value="write">write</option>
+            <option value="bulk">bulk</option>
+            <option value="stream">stream</option>
+          </select>
+        </div>
+        {/* rate limits removed; node capacity governs throughput */}
+        {advanced && (<div title={genericEdgeHelp.weight}>
+          <div style={{ fontSize: 12, color: '#4b5563' }}>Weight</div>
+          <input type="number" value={edge?.weight ?? 1} min={0} step={0.1} onChange={(e) => edge && updateEdge(edge.id, (ed) => (ed.weight = Number(e.target.value)))} style={{ width: '100%', padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
+        </div>)}
       </div>
     </div>
   )

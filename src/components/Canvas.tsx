@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useEffect, useRef } from 'react'
+import { useMemo, useCallback, useEffect, useRef, useState } from 'react'
 import ReactFlow, { Background, Controls, MiniMap, useNodesState, useEdgesState, ReactFlowProvider, MarkerType, useReactFlow } from 'reactflow'
 import type { Connection, Edge as RFEdge, Node as RFNode, NodeMouseHandler, EdgeMouseHandler, OnNodesDelete, OnEdgesDelete, NodeChange } from 'reactflow'
 import 'reactflow/dist/style.css'
@@ -32,6 +32,7 @@ function CanvasInner() {
   const graph = useGraphStore((s) => s.graph)
   const connectEdge = useGraphStore((s) => s.connectEdge)
   const select = useGraphStore((s) => s.select)
+  const result = useGraphStore((s) => s.lastResult)
   const deleteNode = useGraphStore((s) => s.deleteNode)
   const deleteEdge = useGraphStore((s) => s.deleteEdge)
   const updateNode = useGraphStore((s) => s.updateNode)
@@ -42,7 +43,7 @@ function CanvasInner() {
   const [nodes, setNodes, onNodesChange] = useNodesState(rf.nodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(rf.edges)
   const connectStartRef = useRef<{ nodeId: string; handleId?: string; handleType?: 'source' | 'target' } | null>(null)
-  const { getViewport, screenToFlowPosition } = useReactFlow()
+  const { screenToFlowPosition } = useReactFlow()
 
   useEffect(() => {
     // preserve existing positions and only update labels/new items
@@ -117,8 +118,8 @@ function CanvasInner() {
       toHandle = ensureType(toHandle, 'target')
       // Smart default protocol by actual from node
       const fromNode = graph.nodes.find((n) => n.id === from)
-      const protocol: 'REST' | 'gRPC' | 'Kafka' = fromNode?.type === 'QueueTopic' ? 'Kafka' : 'REST'
-      connectEdge({ id: crypto.randomUUID(), from, to, fromHandle, toHandle, protocol, dials: {} })
+      const protocol: 'Generic' | 'Kafka' = (fromNode?.type === 'QueueTopic' || graph.nodes.find((n) => n.id === to)?.type === 'QueueTopic') ? 'Kafka' : 'Generic'
+      connectEdge({ id: crypto.randomUUID(), from, to, fromHandle, toHandle, protocol })
       connectStartRef.current = null
     },
     [connectEdge, graph.nodes],
@@ -131,6 +132,15 @@ function CanvasInner() {
   const onEdgeClick: EdgeMouseHandler = useCallback((_, e) => {
     select(e.id)
   }, [select])
+
+  const [edgeHover, setEdgeHover] = useState<{ id?: string; x: number; y: number } | null>(null)
+  const onEdgeMouseEnter: EdgeMouseHandler = useCallback((ev, e) => {
+    setEdgeHover({ id: e.id, x: ev.clientX, y: ev.clientY })
+  }, [])
+  const onEdgeMouseMove: EdgeMouseHandler = useCallback((ev, e) => {
+    setEdgeHover({ id: e.id, x: ev.clientX, y: ev.clientY })
+  }, [])
+  const onEdgeMouseLeave: EdgeMouseHandler = useCallback(() => setEdgeHover(null), [])
 
   // propagate moved node positions back into the store
   const handleNodesChange = useCallback(
@@ -155,6 +165,7 @@ function CanvasInner() {
   }, [deleteEdge])
 
   return (
+    <div style={{ width: '100%', height: '100%', position: 'relative' }}>
       <ReactFlow
       nodeTypes={NODE_TYPES}
       nodes={nodes}
@@ -167,13 +178,15 @@ function CanvasInner() {
       onConnect={onConnect}
       onNodeClick={onNodeClick}
         onEdgeClick={onEdgeClick}
+        onEdgeMouseEnter={onEdgeMouseEnter}
+        onEdgeMouseMove={onEdgeMouseMove}
+        onEdgeMouseLeave={onEdgeMouseLeave}
         onSelectionChange={(sel) => {
           if (sel.edges.length > 0) select(sel.edges[0].id)
           else if (sel.nodes.length > 0) select(sel.nodes[0].id)
           else select(undefined)
         }}
         onMoveEnd={() => {
-          const vp = getViewport()
           // center of screen in flow coords: add half of client size divided by zoom to x/y
           const center = screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 })
           setViewportCenter(center)
@@ -182,11 +195,21 @@ function CanvasInner() {
       snapToGrid
       snapGrid={[16, 16]}
         deleteKeyCode={["Backspace", "Delete"]}
-    >
+      >
       <Background gap={16} />
       <MiniMap />
       <Controls />
     </ReactFlow>
+      {edgeHover?.id && result?.edgeStats[edgeHover.id] ? (
+        <div style={{ position: 'fixed', left: edgeHover.x + 8, top: edgeHover.y + 8, zIndex: 50, background: 'white', border: '1px solid #e5e7eb', borderRadius: 8, padding: '6px 8px', boxShadow: '0 8px 20px rgba(0,0,0,.12)', pointerEvents: 'none', fontSize: 11, color: '#111827' }}>
+          <div>Latency: {result.edgeStats[edgeHover.id].modeledLatencyMs.toFixed(1)} ms</div>
+          <div>Delivered: {(result.edgeStats[edgeHover.id].deliveredRps ?? result.edgeStats[edgeHover.id].flowRps).toFixed(1)}/s</div>
+          {typeof result.edgeStats[edgeHover.id].blockedRps === 'number' && result.edgeStats[edgeHover.id].blockedRps! > 0 && (
+            <div style={{ color: '#991b1b' }}>Blocked: {result.edgeStats[edgeHover.id].blockedRps!.toFixed(1)}/s</div>
+          )}
+        </div>
+      ) : null}
+    </div>
   )
 }
 

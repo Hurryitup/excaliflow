@@ -18,7 +18,7 @@ function makeTopic(center: { x: number; y: number }): QueueTopicNode {
     type: 'QueueTopic',
     label: 'Topic',
     position: center,
-    dials: { partitions: 6, perPartitionThroughput: 200 },
+    dials: { partitions: 6, perPartitionThroughput: 1_000_000 },
   }
 }
 

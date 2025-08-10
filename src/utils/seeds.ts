@@ -10,13 +10,13 @@ export const FanInJoin: GraphModel = {
       type: 'Service',
       label: 'Joiner',
       position: { x: 400, y: 100 },
-      dials: { concurrency: 4, serviceTimeMs: 20, batchSize: 3 },
+      dials: { concurrency: 4, serviceTimeMs: 20, parallelEfficiency: 1, join: { type: 'waitAll', requiredStreams: 3, joinEfficiency: 1 } },
     },
   ],
   edges: [
-    { id: 'e1', from: 'api1', to: 'svc', protocol: 'gRPC', dials: {} },
-    { id: 'e2', from: 'api2', to: 'svc', protocol: 'gRPC', dials: {} },
-    { id: 'e3', from: 'api3', to: 'svc', protocol: 'gRPC', dials: {} },
+    { id: 'e1', from: 'api1', to: 'svc', protocol: 'Generic' },
+    { id: 'e2', from: 'api2', to: 'svc', protocol: 'Generic' },
+    { id: 'e3', from: 'api3', to: 'svc', protocol: 'Generic' },
   ],
 }
 
@@ -28,9 +28,9 @@ export const KafkaETL: GraphModel = {
     { id: 'db', type: 'Datastore', label: 'Warehouse', position: { x: 900, y: 100 }, dials: { maxQps: 1200, p95Ms: 50 } },
   ],
   edges: [
-    { id: 'e1', from: 'svc1', to: 't', protocol: 'Kafka', dials: { keySkew: 0.2 } },
-    { id: 'e2', from: 't', to: 'svc2', protocol: 'Kafka', dials: { consumerParallelism: 6 } },
-    { id: 'e3', from: 'svc2', to: 'db', protocol: 'gRPC', dials: {} },
+    { id: 'e1', from: 'svc1', to: 't', protocol: 'Kafka', keySkew: 0.2 },
+    { id: 'e2', from: 't', to: 'svc2', protocol: 'Kafka' },
+    { id: 'e3', from: 'svc2', to: 'db', protocol: 'Generic', opType: 'write' },
   ],
 }
 

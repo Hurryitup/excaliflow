@@ -8,7 +8,7 @@ import ScenarioDashboard from './components/ScenarioDashboard'
 
 function App() {
   return (
-    <div style={{ display: 'grid', gridTemplateRows: '48px 140px 1fr', gridTemplateColumns: '1fr', height: '100vh', width: '100vw' }}>
+    <div style={{ display: 'grid', gridTemplateRows: '48px auto 1fr', gridTemplateColumns: '1fr', height: '100vh', width: '100vw' }}>
       <div>
         <TopBar />
       </div>

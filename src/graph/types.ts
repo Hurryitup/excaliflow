@@ -1,5 +1,6 @@
-export type Protocol = 'REST' | 'gRPC' | 'Kafka'
+export type Protocol = 'Generic' | 'Kafka'
 
+// Keep node-level multipliers; edges are lean shapers only
 export type Penalties = {
   capacityMultiplier?: number
   throughputMultiplier?: number
@@ -17,19 +18,26 @@ export type NodeBase = {
   penalties?: Penalties
 }
 
+export type JoinSemantics =
+  | { type: 'none' }
+  | { type: 'waitAll'; requiredStreams?: number; joinEfficiency?: number }
+  | { type: 'windowed'; windowMs: number; requiredStreams?: number; joinEfficiency?: number }
+
 export type ServiceNode = NodeBase & {
   type: 'Service'
   dials: {
     concurrency: number
-    serviceTimeMs: number
-    maxInFlight?: number
-    retryPolicy?: { maxRetries: number; backoffMs: number }
-    batchSize?: number
     parallelEfficiency?: number // 0..1
+    serviceTimeMs: number
     cacheHitRate?: number // 0..1
     cacheHitMs?: number
-    coldStartMs?: number
-    coldStartRate?: number // 0..1
+    maxInFlight?: number
+
+    // Fan-in / ETL semantics
+    join?: JoinSemantics
+
+    // Fan-out semantics for outgoing edges
+    fanOut?: 'split' | 'duplicate'
   }
 }
 
@@ -39,11 +47,6 @@ export type QueueTopicNode = NodeBase & {
     partitions: number
     perPartitionThroughput: number
     replicationFactor?: number
-    retentionHours?: number
-    batchBytes?: number
-    lingerMs?: number
-    // Optional: modeled consumer concurrency at the topic level (informational)
-    consumerGroupConcurrency?: number
   }
 }
 
@@ -62,11 +65,14 @@ export type DatastoreNode = NodeBase & {
   dials: {
     maxQps: number
     p95Ms: number
-    readWriteMix?: { read: number; write: number }
-    connectionPoolSize?: number
-    maxConcurrentRequests?: number
+    writeAmplification?: number // default 4
+    lockContentionFactor?: number // multiplies p95 under write load
+    poolSize?: number
+    maxConcurrent?: number
   }
 }
+
+export type OpType = 'read' | 'write' | 'bulk' | 'stream'
 
 export type Edge = {
   id: string
@@ -76,22 +82,10 @@ export type Edge = {
   label?: string
   fromHandle?: string
   toHandle?: string
-  penalties?: Penalties
-  dials: {
-    // REST/gRPC
-    clientTimeoutMs?: number
-    maxInflight?: number
-    payloadBytes?: number
-    retries?: number
-    retryBackoffMs?: number
-    errorRate?: number // 0..1 expected error rate
-
-    // Kafka
-    keySkew?: number // 0..1 (1=all to one partition)
-    consumerParallelism?: number
-    pollBatchSize?: number
-    atLeastOnce?: boolean
-  }
+  // Shapers (lean edge model)
+  opType?: OpType // interpreted by target nodes (e.g., Datastore)
+  weight?: number // fan-out split; default equal if undefined
+  keySkew?: number // 0..1; ONLY valid when `to` is QueueTopic
 }
 
 export type GraphModel = {
@@ -113,6 +107,11 @@ export type ScenarioResult = {
       consumerLagRps?: number
       wastedConcurrency?: number
       warnings: string[]
+      details?: {
+        service?: { joinMode?: 'none' | 'waitAll' | 'windowed'; workers?: number; availablePartitions?: number; consumerCap?: number }
+        topic?: { partitions: number; consumerCapTotal: number }
+        datastore?: { reads: number; writes: number; costUnits: number; capacity: number }
+      }
     }
   >
   edgeStats: Record<
@@ -120,6 +119,8 @@ export type ScenarioResult = {
     {
       flowRps: number
       modeledLatencyMs: number
+      deliveredRps?: number
+      blockedRps?: number
       warnings: string[]
     }
   >

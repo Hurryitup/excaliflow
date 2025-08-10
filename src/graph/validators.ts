@@ -3,7 +3,7 @@ import type { Edge, GraphModel } from './types'
 export function validateGraph(graph: GraphModel): string[] {
   const warnings: string[] = []
 
-  // Edge protocol compatibility
+  // Edge protocol compatibility and Kafka constraints
   for (const edge of graph.edges) {
     const from = graph.nodes.find((n) => n.id === edge.from)
     const to = graph.nodes.find((n) => n.id === edge.to)
@@ -13,6 +13,10 @@ export function validateGraph(graph: GraphModel): string[] {
         (from.type === 'Service' && to.type === 'QueueTopic') ||
         (from.type === 'QueueTopic' && to.type === 'Service')
       if (!ok) warnings.push(`Invalid Kafka edge ${edge.id}: ${from.type}→${to.type}`)
+      // keySkew only valid when to is QueueTopic
+      if (edge.keySkew != null && to.type !== 'QueueTopic') {
+        warnings.push(`Edge ${edge.id} keySkew is only valid when target is a QueueTopic`)
+      }
     }
   }
 
@@ -34,11 +38,10 @@ export function validateGraph(graph: GraphModel): string[] {
     // Consuming from topic -> service
     if (edge.protocol === 'Kafka' && from.type === 'QueueTopic' && to.type === 'Service') {
       const partitions = from.dials.partitions
+      const consumerPar = to.dials.concurrency
       const eff = Math.max(0, Math.min(to.dials.parallelEfficiency ?? 1, 1))
       const maxUseful = partitions * eff
-      if (to.dials.concurrency > maxUseful) {
-        warnings.push(`Service ${to.label} concurrency (${to.dials.concurrency}) exceeds useful parallelism from partitions (${maxUseful.toFixed(2)}). Excess concurrency may be wasted.`)
-      }
+      if (consumerPar > maxUseful) warnings.push(`Service ${to.label} concurrency (${consumerPar}) exceeds useful parallelism from partitions (${maxUseful.toFixed(2)}). Excess parallelism may be wasted.`)
     }
   }
 
@@ -57,21 +60,13 @@ export function validateGraph(graph: GraphModel): string[] {
       if (pe != null && (pe < 0 || pe > 1)) warnings.push(`Service ${node.label} parallelEfficiency must be 0..1`)
       const chr = r.cacheHitRate
       if (chr != null && (chr < 0 || chr > 1)) warnings.push(`Service ${node.label} cacheHitRate must be 0..1`)
-      const csr = r.coldStartRate
-      if (csr != null && (csr < 0 || csr > 1)) warnings.push(`Service ${node.label} coldStartRate must be 0..1`)
     }
   }
 
+  // Edge shaper sanity
   for (const edge of graph.edges) {
-    const p = edge.penalties
-    if (p) {
-      if ((p.capacityMultiplier ?? 1) < 0) warnings.push(`Negative capacity multiplier on edge ${edge.id}`)
-      if ((p.throughputMultiplier ?? 1) < 0) warnings.push(`Negative throughput multiplier on edge ${edge.id}`)
-      if ((p.latencyMultiplier ?? 1) < 0) warnings.push(`Negative latency multiplier on edge ${edge.id}`)
-      if ((p.fixedRpsCap ?? Infinity) < 0) warnings.push(`Negative fixedRpsCap on edge ${edge.id}`)
-    }
-    const er = edge.dials.errorRate
-    if (er != null && (er < 0 || er > 1)) warnings.push(`Edge ${edge.id} errorRate must be 0..1`)
+    const ks = edge.keySkew
+    if (ks != null && (ks < 0 || ks > 1)) warnings.push(`Edge ${edge.id} keySkew must be 0..1`)
   }
 
   // Simple cycle detection through Kafka topics (disallow by default)
