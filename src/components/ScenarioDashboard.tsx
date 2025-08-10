@@ -24,6 +24,10 @@ export default function ScenarioDashboard() {
       effectiveCap,
       utilization: s.utilization,
       outRate: s.egressRps,
+      extras: {
+        backlogRps: s.backlogRps,
+        consumerLagRps: s.consumerLagRps,
+      },
     }
   })
 

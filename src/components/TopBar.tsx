@@ -43,7 +43,7 @@ export default function TopBar() {
         <button onClick={redo} title="Redo">↷ Redo</button>
         <button onClick={() => autoLayout('TB')} title="Auto-layout vertical">↕︎ Layout</button>
         <button onClick={() => autoLayout('LR')} title="Auto-layout horizontal">↔︎ Layout</button>
-        <button onClick={resetZoom} title="Reset zoom">⤿ Reset</button>
+        <button onClick={resetZoom} title="Reset zoom">⤿ Reset Zoom</button>
         <button onClick={validate} title="Validate graph">✓ Validate</button>
         <button onClick={exportJson} title="Export JSON">⤓ Export</button>
       </div>

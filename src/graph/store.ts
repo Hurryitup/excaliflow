@@ -18,6 +18,7 @@ export type GraphState = {
   selectedId?: string
   viewportVersion: number
   lastResult?: ScenarioResult
+  viewportCenter?: { x: number; y: number }
 }
 
 type Actions = {
@@ -33,6 +34,7 @@ type Actions = {
   setGraph: (graph: GraphModel) => void
   resetViewport: () => void
   setResult: (r: ScenarioResult) => void
+  setViewportCenter: (p: { x: number; y: number }) => void
 }
 
 const initialGraph: GraphModel = { nodes: [], edges: [], metadata: { name: 'Untitled' } }
@@ -46,6 +48,7 @@ export const useGraphStore = create<GraphState & Actions>()(
     future: [],
     selectedId: undefined,
     viewportVersion: 0,
+    viewportCenter: { x: 0, y: 0 },
 
     addNode: (node) =>
       set(
@@ -168,6 +171,7 @@ export const useGraphStore = create<GraphState & Actions>()(
 
     resetViewport: () => set((s) => ({ viewportVersion: s.viewportVersion + 1 })),
     setResult: (r) => set({ lastResult: r }),
+    setViewportCenter: (p) => set({ viewportCenter: p }),
   })),
 )
 

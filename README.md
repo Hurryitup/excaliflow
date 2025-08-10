@@ -54,22 +54,29 @@ src/
 ### Data model essentials
 - Nodes: `ApiEndpoint`, `Service`, `QueueTopic` (Kafka/topic), `Datastore`.
 - Edges: directed; protocol: `REST | gRPC | Kafka`.
+- New: All nodes and edges accept optional `penalties` for advanced modeling: `{ capacityMultiplier, throughputMultiplier, latencyMsAdd, latencyMultiplier, fixedRpsCap }`.
 - Each node type exposes “dials” (typed fields) edited in the Inspector. Examples:
-  - ApiEndpoint: `targetQps` (entry rate)
-  - Service: `concurrency`, `serviceTimeMs`
-  - QueueTopic: `partitions`, `perPartitionThroughput`
-  - Datastore: `maxQps`, `p95Ms`
+  - ApiEndpoint: `targetQps`, `burstFactor`, optional `p50Ms`, `p95Ms` (informational)
+  - Service: `concurrency`, `parallelEfficiency`, `serviceTimeMs`, `cacheHitRate`, `cacheHitMs`, `coldStartRate`, `coldStartMs`, optional `maxInFlight`
+  - QueueTopic: `partitions`, `perPartitionThroughput`, optional `consumerGroupConcurrency`
+  - Datastore: `maxQps`, `p95Ms`, optional `connectionPoolSize`, `maxConcurrentRequests`
+  - Edge (REST/gRPC): `payloadBytes`, `clientTimeoutMs`, `retries`, `retryBackoffMs`, `errorRate`
 
-### Compute model (first pass)
+### Compute model
 Simple, deterministic approximations designed for interactivity.
-- Service capacity: `concurrency × (1000 / serviceTimeMs)` RPS
-- Utilization: `ingress / max(capacity, ε)`; color bands: <0.7 green, 0.7–0.85 yellow, ≥1.0 red
-- Queueing penalty (service): when utilization > 0.7, `queueMs = (utilization^3) × serviceTimeMs`
-- Latency estimate: p50 ≈ `serviceTimeMs + queueMs`, p95 ≈ `p50 × 2`
-- Topic capacity: `partitions × perPartitionThroughput`
-- Kafka edge producer penalty: key skew penalty ≈ `skew^2` applied to effective producer × topic cap
-- Flow propagation: topological order, split egress evenly across outgoing edges by default.
-- Egress: `min(ingress, capacity)`; propagated to downstream `incoming` for next nodes.
+- Service effective service time: `t_eff = (1 − cacheHitRate) × serviceTimeMs + cacheHitRate × cacheHitMs + coldStartRate × coldStartMs`
+- Service capacity: `capacity = concurrency × parallelEfficiency × (1000 / t_eff)`
+- Apply node penalties: `capacity *= penalties.capacityMultiplier`; clamp by `penalties.fixedRpsCap` and `maxInFlight` when set
+- Utilization: `ρ = ingress / max(capacity, ε)`; color bands: <0.7 green, 0.7–0.85 yellow, ≥1.0 red
+- Queueing penalty (service): if `ρ > 0.7`, `queueMs = (ρ^3) × t_eff`
+- Latency (service): `p50 = (t_eff + queueMs) × penalties.latencyMultiplier + penalties.latencyMsAdd`; `p95 = p50 × p95Multiplier`
+- Topic capacity: `capacity = partitions × perPartitionThroughput × penalties.capacityMultiplier`, then clamp by `fixedRpsCap`; egress = `min(ingress, capacity)` × `throughputMultiplier`
+- Datastore capacity: `capacity = min(maxQps, connectionPoolSize × maxConcurrentRequests)` when set; apply `capacityMultiplier` and `fixedRpsCap`; `p50 = (p95Ms/1.5) × latencyMultiplier + latencyMsAdd`, `p95 = p50 × p95Multiplier`
+- API ingress shaping: `effectiveIngress = targetQps × burstFactor`; penalties apply to throughput and latency similarly
+- REST/gRPC edge latency: `base = networkBaseMs + (payloadBytes / linkMBps) × 1000`; expected retry overhead: `retries × (base + retryBackoffMs) × errorRate`; total latency = `(base + retryOverhead) × latencyMultiplier + latencyMsAdd`, clamped by `clientTimeoutMs` if set
+- Kafka edge producer penalty: key skew penalty ≈ `skew^2`; per-edge producer cap = `partitions × perPartitionThroughput × (1 − skew^2)`; flow is clamped by this before accumulating into topic ingress
+- Throughput penalties: node/edge egress multiply by `throughputMultiplier` and clamp by `fixedRpsCap` when set
+- Flow propagation: topological order, split egress evenly across outgoing edges by default
 
 The compute worker contract:
 ```
@@ -84,9 +91,12 @@ The compute worker contract:
 - Disallow Kafka edges except `Service → QueueTopic` or `QueueTopic → Service`.
 - Positive integer partitions; positive per‑partition throughput.
 - Simple cycle detection; warns when cycles are present (Kafka cycles disabled by default in v1).
+- Kafka realism: warn when `Service.concurrency` exceeds `QueueTopic.partitions × Service.parallelEfficiency` on `Topic → Service` edges (excess concurrency is likely wasted).
+- Sanity: Probability fields must be 0..1; multipliers and fixed caps must be non-negative.
 
 ### UI/UX behaviors
 - Drag‑and‑drop add nodes from the left palette.
+- New node placement: newly added nodes are inserted at the current canvas center to match the user’s viewport location.
 - Click to select; delete with Backspace/Delete (nodes and edges).
 - Edge labels are optional (edited in Inspector on edge selection).
 - Auto‑layout uses Dagre with type‑aware node sizes and generous spacing to avoid overlap. Two orientations are supported from the top bar: Vertical (TB) and Horizontal (LR).
@@ -161,32 +171,38 @@ The compute worker contract:
 This section documents the exact formulas currently implemented in `engine/compute.ts` and where to adjust them.
 
 #### Service nodes
-- Capacity (RPS): `capacity = concurrency × (1000 / serviceTimeMs)`
+- Effective service time: `t_eff = (1 − cacheHitRate) × serviceTimeMs + cacheHitRate × cacheHitMs + coldStartRate × coldStartMs`
+- Capacity (RPS): `capacity = concurrency × parallelEfficiency × (1000 / t_eff)`
 - Utilization: `ρ = ingress / max(capacity, ε)`
-- Queueing penalty: If `ρ > 0.7`, add `queueMs = (ρ^3) × serviceTimeMs`; otherwise `queueMs = 0`
-- Latency: `p50 = serviceTimeMs + queueMs`; `p95 = p50 × p95Multiplier`
-- Egress (RPS): `min(ingress, capacity)`
+- Queueing penalty: If `ρ > 0.7`, add `queueMs = (ρ^3) × t_eff`; otherwise `queueMs = 0`
+- Latency: `p50 = (t_eff + queueMs) × latencyMultiplier + latencyMsAdd`; `p95 = p50 × p95Multiplier`
+- Egress (RPS): `min(ingress, capacity)`, then apply `throughputMultiplier` and `fixedRpsCap` if present
 - Backlog: `max(0, ingress − capacity)`
 
 Tunable: `p95Multiplier` (default 2) in `defaultEngineConfig`.
 
 #### Queue/Topic nodes (Kafka/queues)
-- Topic capacity: `capacity = partitions × perPartitionThroughput`
-- Egress (RPS): `min(ingress, capacity)`
+- Topic capacity: `capacity = partitions × perPartitionThroughput × capacityMultiplier`, clamped by `fixedRpsCap` if set
+- Egress (RPS): `min(ingress, capacity) × throughputMultiplier`, clamped by `fixedRpsCap`
 - Utilization: `ingress / max(capacity, ε)`
+- Consumer lag estimate: `max(0, ingress − egress)`
 
 Kafka edge producer shaping (applied on edges entering a `QueueTopic`):
 - Effective producer cap on the edge: `producerCap = partitions × perPartitionThroughput × (1 − keySkew^2)`
 - Per‑edge flow is clamped by `producerCap` before accumulation into the topic’s ingress.
 
 #### Datastore nodes
-- Capacity (QPS): `maxQps`
-- Utilization: `ingress / max(maxQps, ε)`
-- Latency: p50 ≈ `p95Ms / 1.5` (informational), `p95 = p95Ms`
-- Egress (RPS): `min(ingress, maxQps)`
+- Base capacity (QPS): `maxQps`
+- Pool clamp: if set, `poolClamp = connectionPoolSize × maxConcurrentRequests`; `capacity = min(maxQps, poolClamp)`
+- Apply `capacityMultiplier` and `fixedRpsCap` as clamps
+- Utilization: `ingress / max(capacity, ε)`
+- Latency: `p50 = (p95Ms/1.5) × latencyMultiplier + latencyMsAdd`, `p95 = p50 × p95Multiplier`
+- Egress (RPS): `min(ingress, capacity) × throughputMultiplier`, clamped by `fixedRpsCap`
 
 #### REST/gRPC edges
-- Latency: `networkBaseMs + (payloadBytes / linkMBps) × 1000`
+- Base latency: `networkBaseMs + (payloadBytes / linkMBps) × 1000`
+- Retry overhead: `retries × (base + retryBackoffMs) × errorRate`
+- Latency with penalties: `(base + retryOverhead) × latencyMultiplier + latencyMsAdd`
 - Timeout clamp: if `clientTimeoutMs` is set and latency ≥ timeout, surface a timeout warning.
 
 Coefficients in `defaultEngineConfig`:
@@ -195,7 +211,7 @@ Coefficients in `defaultEngineConfig`:
 - `p95Multiplier = 2`
 
 #### Flow propagation
-- Ingress seeding: sum of `ApiEndpoint.targetQps` per API node.
+- Ingress seeding: sum of `ApiEndpoint.targetQps × burstFactor` per API node.
 - Order: compute in a best‑effort topological order (Kahn). If cycles exist, remaining nodes are appended to ensure a pass over all nodes.
 - Egress split: if multiple outgoing edges exist, egress is divided evenly across them (current MVP). Each edge may further clamp its share (e.g., Kafka producer cap), after which the value is accumulated into the target node’s ingress.
 

@@ -26,6 +26,54 @@ export function validateGraph(graph: GraphModel): string[] {
     }
   }
 
+  // Kafka realism: service concurrency vs topic partitions when consuming
+  for (const edge of graph.edges) {
+    const from = graph.nodes.find((n) => n.id === edge.from)
+    const to = graph.nodes.find((n) => n.id === edge.to)
+    if (!from || !to) continue
+    // Consuming from topic -> service
+    if (edge.protocol === 'Kafka' && from.type === 'QueueTopic' && to.type === 'Service') {
+      const partitions = from.dials.partitions
+      const eff = Math.max(0, Math.min(to.dials.parallelEfficiency ?? 1, 1))
+      const maxUseful = partitions * eff
+      if (to.dials.concurrency > maxUseful) {
+        warnings.push(`Service ${to.label} concurrency (${to.dials.concurrency}) exceeds useful parallelism from partitions (${maxUseful.toFixed(2)}). Excess concurrency may be wasted.`)
+      }
+    }
+  }
+
+  // Sanity: multipliers and probabilities bounds
+  for (const node of graph.nodes) {
+    const p = node.penalties
+    if (p) {
+      if ((p.capacityMultiplier ?? 1) < 0) warnings.push(`Negative capacity multiplier on ${node.label}`)
+      if ((p.throughputMultiplier ?? 1) < 0) warnings.push(`Negative throughput multiplier on ${node.label}`)
+      if ((p.latencyMultiplier ?? 1) < 0) warnings.push(`Negative latency multiplier on ${node.label}`)
+      if ((p.fixedRpsCap ?? Infinity) < 0) warnings.push(`Negative fixedRpsCap on ${node.label}`)
+    }
+    if (node.type === 'Service') {
+      const r = node.dials
+      const pe = r.parallelEfficiency
+      if (pe != null && (pe < 0 || pe > 1)) warnings.push(`Service ${node.label} parallelEfficiency must be 0..1`)
+      const chr = r.cacheHitRate
+      if (chr != null && (chr < 0 || chr > 1)) warnings.push(`Service ${node.label} cacheHitRate must be 0..1`)
+      const csr = r.coldStartRate
+      if (csr != null && (csr < 0 || csr > 1)) warnings.push(`Service ${node.label} coldStartRate must be 0..1`)
+    }
+  }
+
+  for (const edge of graph.edges) {
+    const p = edge.penalties
+    if (p) {
+      if ((p.capacityMultiplier ?? 1) < 0) warnings.push(`Negative capacity multiplier on edge ${edge.id}`)
+      if ((p.throughputMultiplier ?? 1) < 0) warnings.push(`Negative throughput multiplier on edge ${edge.id}`)
+      if ((p.latencyMultiplier ?? 1) < 0) warnings.push(`Negative latency multiplier on edge ${edge.id}`)
+      if ((p.fixedRpsCap ?? Infinity) < 0) warnings.push(`Negative fixedRpsCap on edge ${edge.id}`)
+    }
+    const er = edge.dials.errorRate
+    if (er != null && (er < 0 || er > 1)) warnings.push(`Edge ${edge.id} errorRate must be 0..1`)
+  }
+
   // Simple cycle detection through Kafka topics (disallow by default)
   const adjacency = new Map<string, string[]>()
   for (const n of graph.nodes) adjacency.set(n.id, [])

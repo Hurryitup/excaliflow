@@ -6,6 +6,7 @@ export type StageResult = {
   effectiveCap: number
   utilization: number
   outRate: number
+  extras?: { backlogRps?: number; consumerLagRps?: number }
 }
 
 function formatRate(n: number): string {
@@ -51,8 +52,12 @@ export default function StageCard({ r }: { r: StageResult }) {
         <div style={{ display: 'flex', justifyContent: 'space-between' }} title={metricTooltips.Generic.output}><span>Output</span><span>{formatRate(r.outRate)}</span></div>
       </div>
       <div style={{ marginTop: 8 }}><CapacityBar utilization={r.utilization} /></div>
-      {saturated && (
-        <div style={{ marginTop: 6, fontSize: 11, color: '#991b1b' }}>Saturation detected — queue grows at {formatRate(r.inRate - r.effectiveCap)}</div>
+      {(saturated || r.extras?.backlogRps || r.extras?.consumerLagRps) && (
+        <div style={{ marginTop: 6, fontSize: 11, color: '#991b1b' }}>
+          {saturated && <div>Saturation detected — queue grows at {formatRate(r.inRate - r.effectiveCap)}</div>}
+          {r.extras?.backlogRps ? <div>Backlog: {formatRate(r.extras.backlogRps)}</div> : null}
+          {r.extras?.consumerLagRps ? <div>Consumer lag: {formatRate(r.extras.consumerLagRps)}</div> : null}
+        </div>
       )}
     </div>
   )

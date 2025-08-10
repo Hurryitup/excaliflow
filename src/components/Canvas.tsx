@@ -1,5 +1,5 @@
 import { useMemo, useCallback, useEffect, useRef } from 'react'
-import ReactFlow, { Background, Controls, MiniMap, useNodesState, useEdgesState, ReactFlowProvider, MarkerType } from 'reactflow'
+import ReactFlow, { Background, Controls, MiniMap, useNodesState, useEdgesState, ReactFlowProvider, MarkerType, useReactFlow } from 'reactflow'
 import type { Connection, Edge as RFEdge, Node as RFNode, NodeMouseHandler, EdgeMouseHandler, OnNodesDelete, OnEdgesDelete, NodeChange } from 'reactflow'
 import 'reactflow/dist/style.css'
 
@@ -35,12 +35,14 @@ function CanvasInner() {
   const deleteNode = useGraphStore((s) => s.deleteNode)
   const deleteEdge = useGraphStore((s) => s.deleteEdge)
   const updateNode = useGraphStore((s) => s.updateNode)
+  const setViewportCenter = useGraphStore((s) => s.setViewportCenter)
   // no rfInstance usage for now; rely on React Flow callbacks
 
   const rf = useMemo(() => toRF(graph), [graph.nodes, graph.edges])
   const [nodes, setNodes, onNodesChange] = useNodesState(rf.nodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(rf.edges)
   const connectStartRef = useRef<{ nodeId: string; handleId?: string; handleType?: 'source' | 'target' } | null>(null)
+  const { getViewport, screenToFlowPosition } = useReactFlow()
 
   useEffect(() => {
     // preserve existing positions and only update labels/new items
@@ -169,6 +171,12 @@ function CanvasInner() {
           if (sel.edges.length > 0) select(sel.edges[0].id)
           else if (sel.nodes.length > 0) select(sel.nodes[0].id)
           else select(undefined)
+        }}
+        onMoveEnd={() => {
+          const vp = getViewport()
+          // center of screen in flow coords: add half of client size divided by zoom to x/y
+          const center = screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 })
+          setViewportCenter(center)
         }}
       fitView
       snapToGrid
