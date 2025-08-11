@@ -10,7 +10,7 @@ export const FanInJoin: GraphModel = {
       type: 'Service',
       label: 'Joiner',
       position: { x: 400, y: 100 },
-      dials: { concurrency: 4, serviceTimeMs: 20, parallelEfficiency: 1, join: { type: 'waitAll', requiredStreams: 3, joinEfficiency: 1 } },
+      dials: { concurrency: 4, serviceTimeMs: 20, parallelEfficiency: 1, join: { type: 'kOfN', requiredStreams: 3, efficiency: 1 } },
     },
   ],
   edges: [
