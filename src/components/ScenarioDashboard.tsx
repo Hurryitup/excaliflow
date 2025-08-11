@@ -62,17 +62,19 @@ export default function ScenarioDashboard() {
 
   return (
     <div style={{ position: 'relative', height }}>
-      {/* Bottom resize handle */}
-      <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 16, zIndex: 2, display: 'flex', justifyContent: 'center', alignItems: 'flex-end', pointerEvents: 'none' }}>
-        <div onMouseDown={onMouseDown} style={{ width: 40, height: 6, marginBottom: 4, borderRadius: 999, background: '#d1d5db', boxShadow: 'inset 0 0 0 1px #cbd5e1', cursor: 'row-resize', pointerEvents: 'auto' }} />
-      </div>
-      <div style={{ overflowX: 'auto', overflowY: height < CARD_MIN_HEIGHT ? 'auto' : 'hidden', padding: '12px 16px 8px', scrollBehavior: 'smooth', width: '100%', height: '100%' }}>
-        <div style={{ display: 'flex', gap: 12, minHeight: CARD_MIN_HEIGHT, whiteSpace: 'nowrap', scrollSnapType: 'x mandatory' as any }}>
+      <div style={{ overflowX: 'auto', overflowY: height < CARD_MIN_HEIGHT ? 'auto' : 'hidden', padding: '12px 16px 12px', scrollBehavior: 'smooth', width: '100%', height: '100%', scrollPaddingRight: 16 as any }}>
+        <div style={{ display: 'flex', gap: 12, minHeight: CARD_MIN_HEIGHT, whiteSpace: 'nowrap', scrollSnapType: 'x proximity' as any }}>
           {cards.map((c) => (
             <div key={c.id} style={{ flex: '0 0 auto', scrollSnapAlign: 'start' }}>
               <StageCard r={c} />
             </div>
           ))}
+          {/* Spacer to ensure last card is fully reachable */}
+          <div style={{ flex: '0 0 30px' }} />
+        </div>
+        {/* Bottom resize handle moved to the divider line (slightly overlapping below) */}
+        <div style={{ position: 'absolute', left: 0, right: 0, bottom: -5, height: 16, zIndex: 3, display: 'flex', justifyContent: 'center', alignItems: 'flex-end', pointerEvents: 'none' }}>
+          <div onMouseDown={onMouseDown} style={{ width: 40, height: 6, marginBottom: 4, borderRadius: 999, background: '#d1d5db', boxShadow: 'inset 0 0 0 1px #cbd5e1', cursor: 'row-resize', pointerEvents: 'auto' }} />
         </div>
       </div>
     </div>

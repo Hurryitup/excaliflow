@@ -58,6 +58,11 @@ src/
 - Each node type exposes “dials” (typed fields) edited in the Inspector. Examples:
   - ApiEndpoint: `targetQps`, `burstFactor`, optional `p50Ms`, `p95Ms` (informational)
   - Service: `concurrency`, `parallelEfficiency`, `serviceTimeMs`, `cacheHitRate`, `cacheHitMs`, optional `maxInFlight`, optional `join`, and `fanOut` (`split | duplicate`)
+    - Join semantics:
+      - `none` (default): merge inputs
+      - `all`: 1-from-each; ingress = `min(streams) × efficiency`
+      - `kOfN`: require k streams; ingress = `min(kth, sum/k) × efficiency`
+      - `window`: windowed k-of-n; ingress = `min(kth, sum/k) × matchRate × efficiency`
   - QueueTopic: `partitions`, `perPartitionThroughput`
   - Datastore: `maxQps`, `p95Ms`, optional `writeAmplification`, `lockContentionFactor`, `poolSize`, `maxConcurrent`
   - Edge: `opType` (`read | write | bulk | stream`), `weight` (used when `fanOut=split`), and for Kafka edges only: `keySkew`
@@ -67,6 +72,8 @@ Simple, deterministic approximations designed for interactivity.
 - Service effective service time: `t_eff = (1 − cacheHitRate) × serviceTimeMs + cacheHitRate × cacheHitMs`
 - Service workers: if consuming from Kafka, `workers = min(concurrency, sum(upstreamTopic.partitions))`; otherwise `workers = concurrency`
 - Service capacity: `capacity = workers × parallelEfficiency × (1000 / t_eff)`
+- Service join (pre-capacity):
+  - none: `Σ r_i`; all: `min_i r_i × efficiency`; kOfN: `min(kth, (Σ r_i)/k) × efficiency`; window: `min(kth, (Σ r_i)/k) × matchRate × efficiency`
 - Apply node penalties: `capacity *= penalties.capacityMultiplier`; clamp by `penalties.fixedRpsCap` and `maxInFlight` when set
 - Utilization: `ρ = ingress / max(capacity, ε)`; color bands: <0.7 green, 0.7–0.85 yellow, ≥1.0 red
 - Queueing penalty (service): if `ρ > 0.7`, `queueMs = (ρ^3) × t_eff`
@@ -103,6 +110,7 @@ The compute worker contract:
 - Auto‑layout uses Dagre with type‑aware node sizes and generous spacing to avoid overlap. Two orientations are supported from the top bar: Vertical (TB) and Horizontal (LR).
 - Inspector provides dial editing with explanatory tooltips (centralized in `graph/help.ts`).
 - Dashboard cards summarize each node’s Input / Effective cap / Output / Utilization with tooltips. For Service and Datastore cards, p50/p95 latency is displayed; a “?” popover explains the exact computation and inputs.
+- Dashboard cards also show a Limiter line indicating the active bottleneck and an Upstream hint when input was throttled earlier.
 - Edge hover popovers on the canvas show modeled latency and delivered/blocked RPS.
 - Compute is triggered from the top bar (Run Calc) and results are displayed via the dashboard cards. A lightweight runner component (`EngineRunner`) ensures worker communication without extra UI.
 
@@ -181,6 +189,7 @@ This section documents the exact formulas currently implemented in `engine/compu
 - Latency: `p50 = (t_eff + queueMs) × latencyMultiplier + latencyMsAdd`; `p95 = p50 × p95Multiplier`
 - Egress (RPS): `min(ingress, capacity)`, then apply `throughputMultiplier` and `fixedRpsCap` if present
 - Backlog: `max(0, ingress − capacity)`
+- Join semantics (pre-capacity): none, all, k-of-n, window as defined above.
 
 Tunable: `p95Multiplier` (default 2) in `defaultEngineConfig`.
 
@@ -193,6 +202,7 @@ Tunable: `p95Multiplier` (default 2) in `defaultEngineConfig`.
 Kafka edge producer shaping (applied on edges entering a `QueueTopic`):
 - Effective producer cap on the edge: `producerCap = partitions × perPartitionThroughput × (1 − keySkew^2)`
 - Per‑edge flow is clamped by `producerCap` before accumulation into the topic’s ingress.
+- Limiter selection: topic limiter is the smallest of `partitions`, `producer-partitions` (after skew), `consumer-parallelism`. Services report `service-compute` or join limiter; datastores report `datastore-capacity`. Kafka edges report `producer-partitions` if clamped.
 
 #### Datastore nodes
 - Base capacity (QPS): `maxQps`

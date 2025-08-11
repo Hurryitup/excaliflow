@@ -18,10 +18,31 @@ export type NodeBase = {
   penalties?: Penalties
 }
 
+export type LimiterType =
+  | 'none'
+  | 'service-compute'
+  | 'partitions'
+  | 'producer-partitions'
+  | 'consumer-parallelism'
+  | 'join-kofn'
+  | 'join-all'
+  | 'window-correlation'
+  | 'datastore-capacity'
+  | 'backpressure'
+  | 'rate-limit'
+  | 'other'
+
+export type LimiterInfo = {
+  type: LimiterType
+  reason: string
+  details?: Record<string, number | string | boolean>
+}
+
 export type JoinSemantics =
-  | { type: 'none' }
-  | { type: 'waitAll'; requiredStreams?: number; joinEfficiency?: number }
-  | { type: 'windowed'; windowMs: number; requiredStreams?: number; joinEfficiency?: number }
+  | { type: 'none' }                                  // default: merge
+  | { type: 'all'; efficiency?: number }              // 1-from-each-stream
+  | { type: 'kOfN'; requiredStreams: number; efficiency?: number }
+  | { type: 'window'; requiredStreams: number; matchRate: number; efficiency?: number }
 
 export type ServiceNode = NodeBase & {
   type: 'Service'
@@ -107,8 +128,23 @@ export type ScenarioResult = {
       consumerLagRps?: number
       wastedConcurrency?: number
       warnings: string[]
+      limiter: LimiterInfo
+      upstreamConstraint?: { type: LimiterType; reason: string; inputRps: number; wouldBeRps?: number }
       details?: {
-        service?: { joinMode?: 'none' | 'waitAll' | 'windowed'; workers?: number; availablePartitions?: number; consumerCap?: number }
+        service?: {
+          joinMode?: 'none' | 'all' | 'kOfN' | 'window'
+          joinSummary?: {
+            requiredStreams?: number
+            efficiency?: number
+            matchRate?: number
+            activeStreamsCount?: number
+            joinIngressRps?: number
+            limiter?: string
+          }
+          workers?: number
+          availablePartitions?: number
+          consumerCap?: number
+        }
         topic?: { partitions: number; consumerCapTotal: number }
         datastore?: { reads: number; writes: number; costUnits: number; capacity: number }
       }
@@ -122,6 +158,7 @@ export type ScenarioResult = {
       deliveredRps?: number
       blockedRps?: number
       warnings: string[]
+      limiter?: LimiterInfo
     }
   >
   global: {

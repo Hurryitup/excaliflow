@@ -68,10 +68,21 @@ export default function StageCard({ r }: { r: StageResult }) {
   const chipFg = saturated ? '#991b1b' : r.utilization >= 0.9 ? '#854d0e' : '#166534'
   const details = result?.nodeStats[r.id]?.details
   const nodeStats = result?.nodeStats[r.id]
+  const limiter = result?.nodeStats[r.id]?.limiter
+  const upstream = result?.nodeStats[r.id]?.upstreamConstraint
 
   const inputExplain = (() => {
     if (!node) return ''
     if (node.type === 'ApiEndpoint') return `Input = targetQps × burst = ${node.dials.targetQps} × ${((node.dials as any).burstFactor ?? 1)}`
+    if (node.type === 'Service') {
+      const svc = details?.service
+      const j = svc?.joinMode
+      const js = svc?.joinSummary
+      if (!j || j === 'none') return 'Input = sum(incoming edges)'
+      if (j === 'all') return `Join(all): input = min(streams) × efficiency${js?.efficiency != null ? ` (${js.efficiency})` : ''}`
+      if (j === 'kOfN') return `Join(k-of-n k=${js?.requiredStreams ?? '?'}): input = min(kth, sum/k) × efficiency`
+      if (j === 'window') return `Join(window k=${js?.requiredStreams ?? '?'}): input = min(kth, sum/k) × match(${js?.matchRate ?? '?'}) × efficiency`
+    }
     return `Input = sum(incoming edges)`
   })()
 
@@ -134,6 +145,18 @@ export default function StageCard({ r }: { r: StageResult }) {
             <Info text={outExplain} />
           </span>
         </div>
+        {limiter && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+            <span>Limiter</span>
+            <span title={limiter.reason} style={{ fontSize: 11, color: '#374151' }}>{limiter.reason}</span>
+          </div>
+        )}
+        {upstream && limiter?.type === 'none' && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+            <span>Upstream</span>
+            <span title={upstream.reason} style={{ fontSize: 11, color: '#374151' }}>{upstream.reason}</span>
+          </div>
+        )}
         {(node?.type === 'Service' || node?.type === 'Datastore') && (
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 }}>
             <span>Latency p50/p95</span>

@@ -37,7 +37,22 @@ type Actions = {
   setViewportCenter: (p: { x: number; y: number }) => void
 }
 
-const initialGraph: GraphModel = { nodes: [], edges: [], metadata: { name: 'Untitled' } }
+const STORAGE_KEY = 'excaliflow:graph'
+const safeLoadGraph = (): GraphModel | undefined => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return undefined
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.nodes) && Array.isArray(parsed.edges)) {
+      return parsed as GraphModel
+    }
+  } catch {
+    // ignore
+  }
+  return undefined
+}
+
+const initialGraph: GraphModel = safeLoadGraph() ?? { nodes: [], edges: [], metadata: { name: 'Untitled' } }
 
 const cloneGraph = (g: GraphModel): GraphModel => JSON.parse(JSON.stringify(g)) as GraphModel
 
@@ -58,6 +73,7 @@ export const useGraphStore = create<GraphState & Actions>()(
           state.future = []
           state.graph.nodes.push(node)
           state.selectedId = node.id
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.graph)) } catch {}
         }),
         false,
         'addNode',
@@ -71,6 +87,7 @@ export const useGraphStore = create<GraphState & Actions>()(
           state.future = []
           state.graph.edges.push(edge)
           state.selectedId = edge.id
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.graph)) } catch {}
         }),
         false,
         'connectEdge',
@@ -86,6 +103,7 @@ export const useGraphStore = create<GraphState & Actions>()(
           if (node) {
             updater(node as any)
           }
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.graph)) } catch {}
         }),
         false,
         'updateNode',
@@ -99,6 +117,7 @@ export const useGraphStore = create<GraphState & Actions>()(
           state.future = []
           const edge = state.graph.edges.find((e) => e.id === id)
           if (edge) updater(edge)
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.graph)) } catch {}
         }),
         false,
         'updateEdge',
@@ -113,6 +132,7 @@ export const useGraphStore = create<GraphState & Actions>()(
           state.graph.nodes = state.graph.nodes.filter((n) => n.id !== id)
           state.graph.edges = state.graph.edges.filter((e) => e.from !== id && e.to !== id)
           if (state.selectedId === id) state.selectedId = undefined
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.graph)) } catch {}
         }),
         false,
         'deleteNode',
@@ -126,6 +146,7 @@ export const useGraphStore = create<GraphState & Actions>()(
           state.future = []
           state.graph.edges = state.graph.edges.filter((e) => e.id !== id)
           if (state.selectedId === id) state.selectedId = undefined
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.graph)) } catch {}
         }),
         false,
         'deleteEdge',
@@ -164,6 +185,7 @@ export const useGraphStore = create<GraphState & Actions>()(
           state.history.push(cloneGraph(prev))
           state.future = []
           state.graph = graph
+           try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.graph)) } catch {}
         }),
         false,
         'setGraph',

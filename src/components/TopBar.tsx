@@ -10,7 +10,12 @@ export default function TopBar() {
   const { run } = useAutoLayout()
   const resetViewport = useGraphStore((s) => s.resetViewport)
 
-  const newGraph = () => setGraph({ nodes: [], edges: [], metadata: { name: 'Untitled', createdAt: new Date().toISOString() } })
+  const STORAGE_KEY = 'excaliflow:graph'
+
+  const newGraph = () => {
+    try { localStorage.removeItem(STORAGE_KEY) } catch {}
+    setGraph({ nodes: [], edges: [], metadata: { name: 'Untitled', createdAt: new Date().toISOString() } })
+  }
 
   const exportJson = () => {
     const blob = new Blob([JSON.stringify(graph, null, 2)], { type: 'application/json' })
@@ -20,6 +25,29 @@ export default function TopBar() {
     a.download = `${graph.metadata?.name ?? 'scenario'}.json`
     a.click()
     URL.revokeObjectURL(url)
+  }
+
+  const importJson = async () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'application/json'
+    input.onchange = async () => {
+      const file = input.files?.[0]
+      if (!file) return
+      try {
+        const text = await file.text()
+        const parsed = JSON.parse(text)
+        if (parsed && typeof parsed === 'object' && Array.isArray(parsed.nodes) && Array.isArray(parsed.edges)) {
+          setGraph(parsed)
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed)) } catch {}
+        } else {
+          alert('Invalid scenario file')
+        }
+      } catch (e) {
+        alert('Failed to import scenario: ' + (e as Error).message)
+      }
+    }
+    input.click()
   }
 
   const validate = () => {
@@ -46,6 +74,7 @@ export default function TopBar() {
         <button onClick={resetZoom} title="Reset zoom">⤿ Reset Zoom</button>
         <button onClick={validate} title="Validate graph">✓ Validate</button>
         <button onClick={exportJson} title="Export JSON">⤓ Export</button>
+        <button onClick={importJson} title="Import JSON">⇪ Import</button>
       </div>
     </div>
   )

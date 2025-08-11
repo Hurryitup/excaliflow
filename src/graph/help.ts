@@ -15,6 +15,10 @@ export const dialTooltips: Record<NodeKind, Record<string, string>> = {
     cacheHitRate: 'Fraction of requests served from cache (0..1). Reduces effective service time accordingly.',
     cacheHitMs: 'Latency for cache hits (ms). Used with cacheHitRate.',
     fanOut: 'How to route egress across multiple outgoing edges. split: divide by weights; duplicate: send full egress to each edge (read+write patterns).',
+    joinType: 'How multiple inbound streams combine before capacity. none: merge; all: 1-from-each; kOfN: need k distinct streams; window: k-of-n with a match probability.',
+    joinRequiredStreams: 'For k-of-n/window joins: how many distinct inbound streams must contribute to produce one unit of output.',
+    joinMatchRate: 'For window joins: probability (0..1) that items from different streams co-occur within the window.',
+    joinEfficiency: 'Coordination overhead (0..1) applied to the join effective ingress.',
     // Kafka parallelism is modeled via concurrency directly
   },
   QueueTopic: {

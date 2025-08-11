@@ -6,6 +6,7 @@ import type {
   DatastoreNode,
   Edge,
   OpType,
+  LimiterInfo,
 } from '../graph/types'
 
 const EPSILON = 1e-6
@@ -122,15 +123,56 @@ export function computeScenario(graph: GraphModel, config: EngineConfig = defaul
     const ingress = incoming[nodeId] || 0
 
     if (n.type === 'Service') {
-      let effectiveIngress = ingress
-      // Join semantics
-      const inEdges = (edgesByTo.get(n.id) ?? []).map((e) => ({ e, rps: edgeStats[e.id]?.flowRps ?? 0 }))
-      const joinSpec = n.dials.join
-      if (joinSpec && (joinSpec.type === 'waitAll' || joinSpec.type === 'windowed')) {
-        const minIn = inEdges.length > 0 ? Math.min(...inEdges.map((x) => x.rps)) : 0
-        const eff = joinSpec.joinEfficiency ?? 1
-        effectiveIngress = minIn * eff
+      // Compute join semantics pre-capacity
+      const inEdgesArray = edgesByTo.get(n.id) ?? []
+      const inboundStreams = inEdgesArray.map((e) => ({ e, rps: edgeStats[e.id]?.flowRps ?? 0 }))
+      const rpsList = inboundStreams.map((x) => x.rps)
+      const N = rpsList.length
+      let joinIngressRps = ingress
+      let activeStreamsIdx: number[] = []
+      let consumption: number[] = new Array(N).fill(0)
+      let limiter: string | undefined
+      const js = n.dials.join
+      const effMult = (v: number, eff?: number) => v * (eff == null ? 1 : Math.max(0, Math.min(1, eff)))
+      if (!js || js.type === 'none' || N === 0) {
+        joinIngressRps = rpsList.reduce((a, b) => a + b, 0)
+        consumption = rpsList.slice()
+        activeStreamsIdx = rpsList.map((_, i) => i)
+        limiter = 'merge'
+      } else if (js.type === 'all') {
+        const base = N > 0 ? Math.min(...rpsList) : 0
+        joinIngressRps = effMult(base, js.efficiency)
+        consumption = new Array(N).fill(joinIngressRps)
+        activeStreamsIdx = rpsList.map((_, i) => i)
+        limiter = `all: min=${base}`
+      } else if (js.type === 'kOfN') {
+        const k = Math.max(1, Math.min(js.requiredStreams, Math.max(1, N)))
+        const sorted = rpsList
+          .map((r, i) => ({ r, i }))
+          .sort((a, b) => b.r - a.r)
+        const kth = sorted.length >= k ? sorted[k - 1].r : 0
+        const sumAll = rpsList.reduce((a, b) => a + b, 0)
+        const baseKofN = Math.min(kth, sumAll / Math.max(1, k))
+        joinIngressRps = effMult(baseKofN, js.efficiency)
+        activeStreamsIdx = sorted.slice(0, k).map((x) => x.i)
+        consumption = rpsList.map((_, i) => (activeStreamsIdx.includes(i) ? joinIngressRps : 0))
+        limiter = `kOfN k=${k}: min(kth=${kth}, sum/k=${(sumAll / Math.max(1, k)).toFixed(2)})`
+      } else if (js.type === 'window') {
+        const k = Math.max(1, Math.min(js.requiredStreams, Math.max(1, N)))
+        const sorted = rpsList
+          .map((r, i) => ({ r, i }))
+          .sort((a, b) => b.r - a.r)
+        const kth = sorted.length >= k ? sorted[k - 1].r : 0
+        const sumAll = rpsList.reduce((a, b) => a + b, 0)
+        const baseKofN = Math.min(kth, sumAll / Math.max(1, k))
+        const matchRate = Math.max(0, Math.min(1, js.matchRate))
+        const base = baseKofN * matchRate
+        joinIngressRps = effMult(base, js.efficiency)
+        activeStreamsIdx = sorted.slice(0, k).map((x) => x.i)
+        consumption = rpsList.map((_, i) => (activeStreamsIdx.includes(i) ? joinIngressRps : 0))
+        limiter = `window k=${k}: bound * match=${matchRate}`
       }
+      let effectiveIngress = joinIngressRps
 
       // Base capacity; when consuming from Kafka, clamp effective workers by available partitions
       const kafkaIn = (edgesByTo.get(n.id) ?? []).filter((e) => e.protocol === 'Kafka')
@@ -197,6 +239,17 @@ export function computeScenario(graph: GraphModel, config: EngineConfig = defaul
       else if (rho >= 0.85) warnings.push('High utilization (≥0.85)')
       else if (rho >= 0.7) warnings.push('Elevated utilization (≥0.70)')
       if (backlog > 0) bottlenecks.push({ id: n.id, reason: 'Capacity exceeded' })
+      // Limiter selection for Service
+      let nodeLimiter: LimiterInfo = { type: 'none', reason: 'no constraint' }
+      const hasJoin = !!js && js.type !== 'none' && N > 0
+      if (capacity <= effectiveIngress + EPSILON) {
+        nodeLimiter = { type: 'service-compute', reason: `capacity ${capacity.toFixed(1)}/s` }
+      } else if (hasJoin) {
+        if (js!.type === 'all') nodeLimiter = { type: 'join-all', reason: limiter ?? 'join=all' }
+        else if (js!.type === 'kOfN') nodeLimiter = { type: 'join-kofn', reason: limiter ?? 'join=kOfN' }
+        else if (js!.type === 'window') nodeLimiter = { type: 'window-correlation', reason: limiter ?? 'join=window' }
+      }
+
       nodeStats[n.id] = {
         ingressRps: effectiveIngress,
         egressRps: egress,
@@ -206,7 +259,43 @@ export function computeScenario(graph: GraphModel, config: EngineConfig = defaul
         backlogRps: backlog > 0 ? backlog : undefined,
         wastedConcurrency,
         warnings,
-        details: { service: { joinMode: (n.dials.join?.type ?? 'none') as any, workers, availablePartitions: kafkaIn.length > 0 ? availablePartitions : undefined, consumerCap: consumerCapForDetails } },
+        limiter: nodeLimiter,
+        details: {
+          service: {
+            joinMode: (n.dials.join?.type ?? 'none') as any,
+            joinSummary: js
+              ? {
+                  requiredStreams: (js as any).requiredStreams,
+                  efficiency: (js as any).efficiency,
+                  matchRate: (js as any).matchRate,
+                  activeStreamsCount: activeStreamsIdx.length,
+                  joinIngressRps,
+                  limiter,
+                }
+              : undefined,
+            workers,
+            availablePartitions: kafkaIn.length > 0 ? availablePartitions : undefined,
+            consumerCap: consumerCapForDetails,
+          },
+        },
+      }
+      // Map acceptance for inbound edges using join consumption semantics
+      {
+        const inEdgesForNode = edgesByTo.get(nodeId) ?? []
+        const ns = nodeStats[nodeId]
+        const acceptanceRatio = ns.ingressRps > 0 ? Math.min(1, ns.egressRps / Math.max(ns.ingressRps, EPSILON)) : 1
+        for (let i = 0; i < inEdgesForNode.length; i++) {
+          const ie = inEdgesForNode[i]
+          const es = edgeStats[ie.id]
+          if (!es) continue
+          const desired = consumption[i] ?? es.flowRps
+          const baseDelivered = Math.min(desired, es.flowRps)
+          const delivered = baseDelivered * acceptanceRatio
+          const blocked = Math.max(0, es.flowRps - delivered)
+          es.deliveredRps = delivered
+          es.blockedRps = (es.blockedRps ?? 0) + blocked
+          if (blocked > 0) es.warnings.push(`Target constrained: blocked ${blocked.toFixed(2)}/s`)
+        }
       }
     } else if (n.type === 'QueueTopic') {
       const topic = n as QueueTopicNode
@@ -227,6 +316,23 @@ export function computeScenario(graph: GraphModel, config: EngineConfig = defaul
       egress = Math.min(egress, n.penalties?.fixedRpsCap ?? Infinity)
       egress = egress * (n.penalties?.throughputMultiplier ?? 1)
       const consumerLagRps = Math.max(0, ingress - egress)
+      // Limiter for topic: pick smallest bound
+      let limiterType: LimiterInfo['type'] = 'none'
+      let limiterReason = 'no constraint'
+      const compBounds: Array<{ t: LimiterInfo['type']; v: number; reason: string }> = [
+        { t: 'producer-partitions', v: ingress, reason: `producer total ${ingress.toFixed(1)}/s` },
+        { t: 'partitions', v: capacity, reason: `partitions cap ${capacity.toFixed(1)}/s` },
+        { t: 'consumer-parallelism', v: consumerCapTotal || Infinity, reason: `consumer cap ${isFinite(consumerCapTotal) ? consumerCapTotal.toFixed(1) : '∞'}/s` },
+      ]
+      const minV = Math.min(...compBounds.map((b) => b.v))
+      const chosen = compBounds.find((b) => b.v === minV)!
+      limiterType = chosen.t
+      limiterReason = chosen.reason
+      // Upstream constraint: if producer bound < partitions and < consumer limits but not the chosen limiter (e.g., egress limited by downstream), still surface
+      let upstreamConstraint: ScenarioResult['nodeStats'][string]['upstreamConstraint'] | undefined
+      if (ingress < capacity - EPSILON && ingress < (consumerCapTotal || Infinity) - EPSILON && chosen.t !== 'producer-partitions') {
+        upstreamConstraint = { type: 'producer-partitions', reason: 'producer limited ingress', inputRps: ingress }
+      }
       nodeStats[n.id] = {
         ingressRps: ingress,
         egressRps: egress,
@@ -235,6 +341,8 @@ export function computeScenario(graph: GraphModel, config: EngineConfig = defaul
         modeledP95Ms: 0,
         consumerLagRps: consumerLagRps > 0 ? consumerLagRps : undefined,
         warnings: [],
+        limiter: { type: limiterType, reason: limiterReason },
+        upstreamConstraint,
         details: { topic: { partitions: topic.dials.partitions, consumerCapTotal: consumerCapTotal || 0 } },
       }
     } else if (n.type === 'ApiEndpoint') {
@@ -244,7 +352,7 @@ export function computeScenario(graph: GraphModel, config: EngineConfig = defaul
       const p50Base = n.dials.p50Ms ?? 0
       const p50 = p50Base * (n.penalties?.latencyMultiplier ?? 1) + (n.penalties?.latencyMsAdd ?? 0)
       const p95 = n.dials.p95Ms != null ? n.dials.p95Ms : p50 * defaultEngineConfig.p95Multiplier
-      nodeStats[n.id] = { ingressRps: ingress, egressRps: egress, utilization: 0, modeledP50Ms: p50, modeledP95Ms: p95, warnings: [] }
+      nodeStats[n.id] = { ingressRps: ingress, egressRps: egress, utilization: 0, modeledP50Ms: p50, modeledP95Ms: p95, warnings: [], limiter: { type: 'none', reason: 'entry' } }
     } else if (n.type === 'Datastore') {
       // Aggregate incoming edges by opType for cost units
       const inEdges = edgesByTo.get(n.id) ?? []
@@ -284,22 +392,25 @@ export function computeScenario(graph: GraphModel, config: EngineConfig = defaul
         modeledP95Ms: p95,
         backlogRps: backlog > 0 ? backlog : undefined,
         warnings: [],
+        limiter: capacityShare < 1 ? { type: 'datastore-capacity', reason: `capacity ${capacity.toFixed(1)} costUnits/s` } : { type: 'none', reason: 'under capacity' },
         details: { datastore: { reads: dsIngress.reads, writes: dsIngress.writes, costUnits: dsIngress.costUnits, capacity } },
       }
     }
 
     // After node egress is determined, compute acceptance ratio and annotate incoming edges with delivered vs blocked
-    const inEdgesForNode = edgesByTo.get(nodeId) ?? []
-    const ns = nodeStats[nodeId]
-    const acceptanceRatio = ns.ingressRps > 0 ? Math.min(1, ns.egressRps / Math.max(ns.ingressRps, EPSILON)) : 1
-    for (const ie of inEdgesForNode) {
-      const es = edgeStats[ie.id]
-      if (!es) continue
-      const delivered = es.flowRps * acceptanceRatio
-      const blocked = Math.max(0, es.flowRps - delivered)
-      es.deliveredRps = delivered
-      es.blockedRps = (es.blockedRps ?? 0) + blocked
-      if (blocked > 0) es.warnings.push(`Target constrained: blocked ${blocked.toFixed(2)}/s`)
+    if (n.type !== 'Service') {
+      const inEdgesForNode = edgesByTo.get(nodeId) ?? []
+      const ns = nodeStats[nodeId]
+      const acceptanceRatio = ns.ingressRps > 0 ? Math.min(1, ns.egressRps / Math.max(ns.ingressRps, EPSILON)) : 1
+      for (const ie of inEdgesForNode) {
+        const es = edgeStats[ie.id]
+        if (!es) continue
+        const delivered = es.flowRps * acceptanceRatio
+        const blocked = Math.max(0, es.flowRps - delivered)
+        es.deliveredRps = delivered
+        es.blockedRps = (es.blockedRps ?? 0) + blocked
+        if (blocked > 0) es.warnings.push(`Target constrained: blocked ${blocked.toFixed(2)}/s`)
+      }
     }
 
     // Distribute egress across outgoing edges using weights, apply edge shapers, accumulate into targets
@@ -310,6 +421,7 @@ export function computeScenario(graph: GraphModel, config: EngineConfig = defaul
     const totalWeight = outs.reduce((s, e) => s + (e.weight ?? 1), 0) || 1
     for (const e of outs) {
       let flow = duplicate ? fromStats.egressRps : fromStats.egressRps * ((e.weight ?? 1) / totalWeight)
+      const preClamp = flow
       // Kafka producer bound when flowing into topic
       if (e.protocol === 'Kafka') {
         const toNode = graph.nodes.find((x) => x.id === e.to)
@@ -327,7 +439,8 @@ export function computeScenario(graph: GraphModel, config: EngineConfig = defaul
       incoming[e.to] = (incoming[e.to] || 0) + flow
       const latencyMs = edgeTransportLatencyMs(e)
       const warnings: string[] = []
-      edgeStats[e.id] = { flowRps: flow, modeledLatencyMs: latencyMs, deliveredRps: flow, blockedRps: 0, warnings }
+      const limiter = flow + EPSILON < preClamp ? { type: 'producer-partitions', reason: 'producer cap on Kafka edge' } as LimiterInfo : undefined
+      edgeStats[e.id] = { flowRps: flow, modeledLatencyMs: latencyMs, deliveredRps: flow, blockedRps: 0, warnings, limiter }
     }
   }
 

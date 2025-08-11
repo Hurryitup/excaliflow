@@ -60,6 +60,29 @@ export function validateGraph(graph: GraphModel): string[] {
       if (pe != null && (pe < 0 || pe > 1)) warnings.push(`Service ${node.label} parallelEfficiency must be 0..1`)
       const chr = r.cacheHitRate
       if (chr != null && (chr < 0 || chr > 1)) warnings.push(`Service ${node.label} cacheHitRate must be 0..1`)
+
+      // Join validation per Join_semantics.md
+      const j = r.join
+      if (j && j.type !== 'none') {
+        const inboundCount = graph.edges.filter((e) => e.to === node.id).length
+        if (j.type === 'all') {
+          if (inboundCount < 2) warnings.push(`Service ${node.label} join=all requires at least 2 inbound streams; downgraded to merge at runtime`)
+          const eff = j.efficiency
+          if (eff != null && (eff < 0 || eff > 1)) warnings.push(`Service ${node.label} join efficiency must be 0..1`)
+        }
+        if (j.type === 'kOfN' || j.type === 'window') {
+          const eff = j.efficiency as number | undefined
+          if (eff != null && (eff < 0 || eff > 1)) warnings.push(`Service ${node.label} join efficiency must be 0..1`)
+          const required = (j as any).requiredStreams as number
+          if (!Number.isFinite(required) || required < 1 || required > Math.max(1, inboundCount)) {
+            warnings.push(`Service ${node.label} join requiredStreams clamped to [1, ${Math.max(1, inboundCount)}]`)
+          }
+          if ((j as any).matchRate != null) {
+            const mr = (j as any).matchRate as number
+            if (mr < 0 || mr > 1) warnings.push(`Service ${node.label} join matchRate must be 0..1`)
+          }
+        }
+      }
     }
   }
 
